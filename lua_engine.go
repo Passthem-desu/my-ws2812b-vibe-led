@@ -18,23 +18,9 @@ const (
 	ModeBase
 )
 
-// fixColor applies a non-linear brightness correction and color bias to an RGB value.
-// It assumes inputs are 0-255 uint8 and returns corrected 0-255 uint8 values.
-func fixColor(colorR, colorG, colorB uint8) (uint8, uint8, uint8) {
-	const MaxValU8 float64 = 255.0
-	// The original color fixing logic is preserved, working on 0-255 scale.
-	// This helps with the perceived brightness curve and hardware color correction.
-	colorROut := math.Pow(float64(colorR)/MaxValU8, 2.0) * MaxValU8
-	colorGOut := math.Pow(float64(colorG)/MaxValU8, 2.0) * (MaxValU8 * (0x88 / MaxValU8))
-	colorBOut := math.Pow(float64(colorB)/MaxValU8, 2.0) * (MaxValU8 * (0x66 / MaxValU8))
-	return uint8(math.Min(255, colorROut)),
-		uint8(math.Min(255, colorGOut)),
-		uint8(math.Min(255, colorBOut))
-}
-
 // setupLuaState initializes a Lua environment with custom global functions.
 // It exposes 'get_time', 'get_layer_elapsed_time', 'set_pixel', and 'get_pixel' to the Lua script.
-func setupLuaState(L *lua.LState, pixelBuffer *[]byte, pipelineTime, layerElapsedTime float64, mode BlendMode) {
+func setupLuaState(L *lua.LState, pixelBuffer *[]float64, pipelineTime, layerElapsedTime float64) {
 	L.SetGlobal("LEDCount", lua.LNumber(LEDCount))
 
 	// get_time() returns the current time in seconds since the pipeline started.
@@ -82,23 +68,19 @@ func setupLuaState(L *lua.LState, pixelBuffer *[]byte, pipelineTime, layerElapse
 		bIn := float64(L.CheckNumber(4))
 
 		// Scale the input floats (0.0-1.0) to 0-255 uint8 and clamp
-		r := uint8(math.Max(0, math.Min(255, rIn*255.0)))
-		g := uint8(math.Max(0, math.Min(255, gIn*255.0)))
-		b := uint8(math.Max(0, math.Min(255, bIn*255.0)))
+		r := math.Max(0, math.Min(255, rIn*255.0))
+		g := math.Max(0, math.Min(255, gIn*255.0))
+		b := math.Max(0, math.Min(255, bIn*255.0))
 
-		rFixed, gFixed, bFixed := fixColor(r, g, b)
+		// rFixed, gFixed, bFixed := fixColor(r, g, b)
 
 		if index >= 0 && index < LEDCount {
 			buffer := *pixelBuffer
 			idx := index * 3
 
-			// Both ModeOverwrite and ModeBase behave the same (overwrite)
-			switch mode {
-			case ModeOverwrite, ModeBase:
-				buffer[idx+0] = rFixed
-				buffer[idx+1] = gFixed
-				buffer[idx+2] = bFixed
-			}
+			buffer[idx+0] = r
+			buffer[idx+1] = g
+			buffer[idx+2] = b
 		}
 		return 0
 	})
@@ -127,12 +109,11 @@ type RenderLayer struct {
 
 // execute runs the layer's Lua code and applies changes to the pixel buffer.
 // It now accepts pipelineTime (total runtime) and layerElapsedTime (layer-specific runtime).
-func (l *RenderLayer) execute(pixelBuffer *[]byte, pipelineTime, layerElapsedTime float64) error {
+func (l *RenderLayer) execute(pixelBuffer *[]float64, pipelineTime, layerElapsedTime float64) error {
 	L := lua.NewState()
 	defer L.Close()
 
-	// Pass both time metrics to the Lua state setup
-	setupLuaState(L, pixelBuffer, pipelineTime, layerElapsedTime, l.BlendMode)
+	setupLuaState(L, pixelBuffer, pipelineTime, layerElapsedTime)
 
 	if err := L.DoString(l.Code); err != nil {
 		return fmt.Errorf("执行 Lua 脚本 '%s' 失败: %w", l.Name, err)

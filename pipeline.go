@@ -2,6 +2,7 @@ package main
 
 import (
 	"fmt"
+	"math"
 	"sort"
 	"sync"
 	"time"
@@ -18,11 +19,25 @@ type PipelineManager struct {
 	controller *Controller
 	// startTime records when the pipeline began running to calculate elapsed time for Lua scripts.
 	startTime time.Time
-	// pixelBuffer holds the final RGB data (3 bytes per LED) before transmission.
-	pixelBuffer []byte
+	// pixelBuffer holds the final RGB data (3 per LED) before transmission.
+	pixelBuffer []float64
 
 	// isRunning tracks the state of the render loop.
 	isRunning bool
+}
+
+// fixColor applies a non-linear brightness correction and color bias to an RGB value.
+// It assumes inputs are 0-255 uint8 and returns corrected 0-255 uint8 values.
+func fixColor(colorR, colorG, colorB float64) (uint8, uint8, uint8) {
+	const MaxValU8 float64 = 255.0
+	// The original color fixing logic is preserved, working on 0-255 scale.
+	// This helps with the perceived brightness curve and hardware color correction.
+	colorROut := math.Pow(colorR/MaxValU8, 2.0) * MaxValU8
+	colorGOut := math.Pow(colorG/MaxValU8, 2.0) * (MaxValU8 * (0x88 / MaxValU8))
+	colorBOut := math.Pow(colorB/MaxValU8, 2.0) * (MaxValU8 * (0x66 / MaxValU8))
+	return uint8(math.Min(255, colorROut)),
+		uint8(math.Min(255, colorGOut)),
+		uint8(math.Min(255, colorBOut))
 }
 
 // NewPipelineManager creates and initializes a new PipelineManager.
@@ -31,7 +46,7 @@ func NewPipelineManager(c *Controller) *PipelineManager {
 	p := &PipelineManager{
 		controller:  c,
 		startTime:   time.Now(),
-		pixelBuffer: make([]byte, LEDCount*3),
+		pixelBuffer: make([]float64, LEDCount*3),
 	}
 	// Add a default black base layer.
 	p.AddLayer(RenderLayer{
@@ -180,8 +195,17 @@ func (p *PipelineManager) renderFrame() {
 		}
 	}
 
+	var pixelBufferBytes = make([]byte, LEDCount * 3);
+	for i := range LEDCount {
+		pixelBufferBytes[i * 3], pixelBufferBytes[i * 3 + 1], pixelBufferBytes[i * 3 + 2] = fixColor(
+			p.pixelBuffer[i * 3],
+			p.pixelBuffer[i * 3 + 1],
+			p.pixelBuffer[i * 3 + 2],
+		);
+	}
+
 	// 5. Send the final composite frame to the hardware
-	if err := p.controller.SendColors(p.pixelBuffer); err != nil {
+	if err := p.controller.SendColors(pixelBufferBytes); err != nil {
 		fmt.Printf("硬件提交错误: %v\n", err)
 	}
 }
